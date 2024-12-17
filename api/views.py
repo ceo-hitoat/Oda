@@ -10,7 +10,7 @@ from retry_requests import retry
 class CoordinatesReturnView(APIView):
 
     base_url = "https://maps.googleapis.com/maps/api/geocode/json"
-    api_key = "AIzaSyAiJEaiz08oQapvXSbCX1nAeiY8ZajgM6Y" 
+    api_key = "AIzaSyD7j2O97-15Ci47KiNZtocbztuQLRJduYs" 
     
     def get(self, request):
         try:
