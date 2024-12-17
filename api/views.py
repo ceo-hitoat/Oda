@@ -6,11 +6,13 @@ import openmeteo_requests
 import requests_cache
 import pandas as pd
 from retry_requests import retry
+from decouple import config
 
 class CoordinatesReturnView(APIView):
 
     base_url = "https://maps.googleapis.com/maps/api/geocode/json"
-    api_key = "AIzaSyD7j2O97-15Ci47KiNZtocbztuQLRJduYs" 
+    
+    api_key = config("GOOGLE_API_KEY")
     
     def get(self, request):
         try:
