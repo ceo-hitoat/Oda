@@ -7,6 +7,7 @@ import requests_cache
 import pandas as pd
 from retry_requests import retry
 from decouple import config
+from .models import WeatherData
 
 class CoordinatesReturnView(APIView):
 
@@ -193,5 +194,90 @@ class AnalyticsView(APIView):
                 return Response({"error message": "Check the coordinates value"}, status=status.HTTP_404_NOT_FOUND)
     except Exception as e:
         print({"error": f"An unexpected error occured, {str(e)}"})
+
+class EircodeWeatherView(APIView):
+    google_base_url = "https://maps.googleapis.com/maps/api/geocode/json"
+    google_api_key = config("GOOGLE_API_KEY")
+    openmeteo_base_url = "https://api.open-meteo.com/v1/forecast"
+    
+    def get(self, request):
+        try:
+            # Get Eircode from query parameters
+            eircode = request.query_params.get("eircode")
+            if not eircode:
+                return Response({"error message": "Eircode is required"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Convert Eircode to latitude and longitude using Google Maps API
+            google_params = {
+                "address": eircode,
+                "region": "ie",  # Ireland
+                "key": self.google_api_key
+            }
+            google_response = requests.get(self.google_base_url, params=google_params)
+            google_response.raise_for_status()
+            google_data = google_response.json()
+            
+            if google_data['status'] != "OK":
+                return Response({"error message": google_data['status']}, status=status.HTTP_404_NOT_FOUND)
+
+            location = google_data["results"][0]["geometry"]["location"]
+            latitude = location["lat"]
+            longitude = location["lng"]
+
+            # Fetch weather data from Open-Meteo API
+            weather_params = {
+                "latitude": latitude,
+                "longitude": longitude,
+                "hourly": "temperature_2m,relative_humidity_2m,dew_point_2m,cloud_cover,wind_direction_10m,wind_gusts_10m",
+                "past_days": 30,
+                "timezone": "Europe/London"
+            }
+
+            cache_session = requests_cache.CachedSession('.cache', expire_after=3600)
+            retry_session = retry(cache_session, retries=5, backoff_factor=0.2)
+            openmeteo_client = openmeteo_requests.Client(session=retry_session)
+            responses = openmeteo_client.weather_api(self.openmeteo_base_url, params=weather_params)
+
+            response = responses[0]  # Assume only one response
+            hourly = response.Hourly()
+
+            dates = pd.date_range(
+                start=pd.to_datetime(hourly.Time(), unit="s", utc=True),
+                end=pd.to_datetime(hourly.TimeEnd(), unit="s", utc=True),
+                freq=pd.Timedelta(seconds=hourly.Interval()),
+                inclusive="left"
+            ).tolist()
+
+            hourly_data = {
+                "date": [date.isoformat() for date in dates],
+                "temperature_2m": hourly.Variables(0).ValuesAsNumpy().tolist(),
+                "relative_humidity_2m": hourly.Variables(1).ValuesAsNumpy().tolist(),
+                "dew_point_2m": hourly.Variables(2).ValuesAsNumpy().tolist(),
+                "cloud_cover": hourly.Variables(3).ValuesAsNumpy().tolist(),
+                "wind_direction_10m": hourly.Variables(4).ValuesAsNumpy().tolist(),
+                "wind_gusts_10m": hourly.Variables(5).ValuesAsNumpy().tolist(),
+            }
+
+            # Save to database
+            for idx, date in enumerate(hourly_data["date"]):
+                WeatherData.objects.create(
+                    eircode=eircode,
+                    latitude=latitude,
+                    longitude=longitude,
+                    date=date,
+                    temperature_2m=round((hourly_data["temperature_2m"][idx]), 2),
+                    relative_humidity_2m=round((hourly_data["relative_humidity_2m"][idx]), 2),
+                    dew_point_2m=round((hourly_data["dew_point_2m"][idx]), 2),
+                    cloud_cover=round((hourly_data["cloud_cover"][idx]), 2),
+                    wind_direction_10m=round((hourly_data["wind_direction_10m"][idx]), 2),
+                    wind_gusts_10m=round((hourly_data["wind_gusts_10m"][idx]), 2),
+                )
+
+            return Response({"message": "Weather data retrieved and saved successfully."}, status=status.HTTP_200_OK)
+        
+        except requests.exceptions.RequestException as e:
+            return Response({"error message": f"Request failed: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception as e:
+            return Response({"error message": f"An unexpected error occurred: {str(e)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
      
